@@ -164,4 +164,14 @@ async def check_new() -> str:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    import sys
+    if "--http" in sys.argv:
+        port = 8000
+        for i, arg in enumerate(sys.argv):
+            if arg == "--port" and i + 1 < len(sys.argv):
+                port = int(sys.argv[i + 1])
+        mcp.settings.host = "0.0.0.0"
+        mcp.settings.port = port
+        mcp.run(transport="streamable-http")
+    else:
+        mcp.run()

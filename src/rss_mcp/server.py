@@ -97,9 +97,30 @@ async def list_sites() -> str:
     return "\n".join(lines)
 
 
+async def refresh_sites() -> dict[str, int | str]:
+    """Refresh all tracked sites. Returns {site_name: new_item_count or 'error'}."""
+    db = get_storage()
+    sites = db.list_sites()
+    results = {}
+    for site in sites:
+        try:
+            if site["feed_url"]:
+                xml = await fetch_feed_xml(site["feed_url"])
+                items = parse_rss_items(xml)
+            else:
+                html = await fetch_page(site["url"])
+                items = scrape_links(site["url"], html)
+            count = db.add_items(site["id"], items)
+            results[site["name"]] = count
+        except Exception:
+            results[site["name"]] = "error"
+    return results
+
+
 @mcp.tool()
 async def check_new() -> str:
-    """Get all new links since last check. Returns source, title, and link for each new item."""
+    """Get all new links since last check. Refreshes all sites first, then returns new items."""
+    await refresh_sites()
     db = get_storage()
     items = db.get_new_items()
     if not items:

@@ -3,6 +3,7 @@ from pathlib import Path
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from playwright.async_api import async_playwright
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -17,7 +18,9 @@ DB_PATH = Path(__file__).parent.parent.parent / "feeds.db"
 mcp = FastMCP("nouveau-rss", instructions="""
 RSS feed tracker. Use check_new to get new links from tracked sites.
 Use add_site/remove_site/list_sites to manage which sites are tracked.
-""")
+""", transport_security=TransportSecuritySettings(
+    enable_dns_rebinding_protection=False,
+))
 
 _storage: Storage | None = None
 

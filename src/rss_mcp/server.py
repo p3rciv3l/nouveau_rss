@@ -1,8 +1,11 @@
+import os
 from pathlib import Path
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 from playwright.async_api import async_playwright
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
 from .fetcher import detect_feed_url, parse_rss_items, scrape_links
 from .storage import Storage
@@ -163,6 +166,18 @@ async def check_new() -> str:
     return "\n".join(lines)
 
 
+class ApiKeyMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, api_key: str):
+        super().__init__(app)
+        self.api_key = api_key
+
+    async def dispatch(self, request, call_next):
+        auth = request.headers.get("authorization", "")
+        if auth == f"Bearer {self.api_key}":
+            return await call_next(request)
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+
 if __name__ == "__main__":
     import sys
     if "--http" in sys.argv:
@@ -170,8 +185,21 @@ if __name__ == "__main__":
         for i, arg in enumerate(sys.argv):
             if arg == "--port" and i + 1 < len(sys.argv):
                 port = int(sys.argv[i + 1])
+
+        api_key = os.environ.get("NOUVEAU_RSS_API_KEY")
+        if not api_key:
+            print("ERROR: Set NOUVEAU_RSS_API_KEY env var to secure the server.")
+            print("  export NOUVEAU_RSS_API_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')")
+            sys.exit(1)
+
         mcp.settings.host = "0.0.0.0"
         mcp.settings.port = port
-        mcp.run(transport="streamable-http")
+
+        # Wrap the MCP app with API key auth
+        app = mcp.streamable_http_app()
+        app.add_middleware(ApiKeyMiddleware, api_key=api_key)
+
+        import uvicorn
+        uvicorn.run(app, host="0.0.0.0", port=port)
     else:
         mcp.run()

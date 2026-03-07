@@ -42,6 +42,7 @@ class TestAddSite:
         <html><body>
             <a href="https://example.com/post-1">Post 1</a>
             <a href="https://example.com/post-2">Post 2</a>
+            <a href="https://example.com/post-3">Post 3</a>
         </body></html>
         """
         with patch("src.rss_mcp.server.fetch_page", new_callable=AsyncMock, return_value=fake_html):
@@ -51,6 +52,16 @@ class TestAddSite:
         # Baseline items should NOT show up as new
         items = db.get_new_items()
         assert items == []
+
+    @pytest.mark.anyio
+    async def test_add_site_fetch_failure(self, db):
+        """When the initial fetch fails, return an error message."""
+        import httpx
+        with patch("src.rss_mcp.server.fetch_page", new_callable=AsyncMock,
+                   side_effect=httpx.HTTPError("connection refused")):
+            result = await add_site("https://down.example.com", "Down Site")
+        assert "failed" in result.lower()
+        assert db.list_sites() == []
 
     @pytest.mark.anyio
     async def test_add_duplicate_site(self, db):
@@ -89,6 +100,14 @@ class TestListSites:
         assert "Example" in result
         assert "Other" in result
 
+    @pytest.mark.anyio
+    async def test_list_shows_method(self, db):
+        db.add_site("https://rss-site.com", "RSS Site", feed_url="https://rss-site.com/feed")
+        db.add_site("https://scraped-site.com", "Scraped Site")
+        result = await list_sites()
+        assert "RSS" in result
+        assert "scraping" in result
+
 
 class TestCheckNew:
     @pytest.mark.anyio
@@ -97,14 +116,16 @@ class TestCheckNew:
         db.add_items(site["id"], [
             {"title": "New Post", "link": "https://example.com/new"},
         ])
-        result = await check_new()
+        with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}):
+            result = await check_new()
         assert "New Post" in result
         assert "https://example.com/new" in result
         assert "Example" in result
 
     @pytest.mark.anyio
     async def test_check_new_empty(self, db):
-        result = await check_new()
+        with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}):
+            result = await check_new()
         assert "no new" in result.lower()
 
     @pytest.mark.anyio
@@ -113,6 +134,28 @@ class TestCheckNew:
         db.add_items(site["id"], [
             {"title": "Post", "link": "https://example.com/post"},
         ])
-        await check_new()
-        result = await check_new()
+        with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}):
+            await check_new()
+            result = await check_new()
         assert "no new" in result.lower()
+
+    @pytest.mark.anyio
+    async def test_check_new_output_format(self, db):
+        """Verify the exact output format: - source | title | link"""
+        site = db.add_site("https://example.com", "Example")
+        db.add_items(site["id"], [
+            {"title": "My Post", "link": "https://example.com/my-post"},
+        ])
+        with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}):
+            result = await check_new()
+        assert "- Example | My Post | https://example.com/my-post" in result
+
+    @pytest.mark.anyio
+    async def test_check_new_untitled_items_show_placeholder(self, db):
+        site = db.add_site("https://example.com", "Example")
+        db.add_items(site["id"], [
+            {"link": "https://example.com/no-title"},
+        ])
+        with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}):
+            result = await check_new()
+        assert "(untitled)" in result

@@ -65,6 +65,33 @@ class TestListSites:
         assert names == {"Anthropic", "DeepMind"}
 
 
+class TestSetUsePlaywright:
+    def test_set_use_playwright(self, db):
+        site = db.add_site("https://example.com", "Example")
+        db.set_use_playwright(site["id"], True)
+        sites = db.list_sites()
+        assert sites[0]["use_playwright"] == 1
+
+    def test_unset_use_playwright(self, db):
+        site = db.add_site("https://example.com", "Example")
+        db.set_use_playwright(site["id"], True)
+        db.set_use_playwright(site["id"], False)
+        sites = db.list_sites()
+        assert sites[0]["use_playwright"] == 0
+
+
+class TestListSitesFields:
+    def test_list_sites_includes_use_playwright(self, db):
+        db.add_site("https://example.com", "Example")
+        sites = db.list_sites()
+        assert "use_playwright" in sites[0]
+
+    def test_list_sites_includes_feed_url(self, db):
+        db.add_site("https://example.com", "Example", feed_url="https://example.com/feed")
+        sites = db.list_sites()
+        assert sites[0]["feed_url"] == "https://example.com/feed"
+
+
 class TestAddItems:
     def test_add_items_to_site(self, db):
         site = db.add_site("https://anthropic.com/research", "Anthropic")
@@ -91,6 +118,21 @@ class TestAddItems:
             {"link": "https://example.com/page"},
         ])
         assert count == 1
+
+    def test_items_without_link_are_skipped(self, db):
+        site = db.add_site("https://example.com", "Example")
+        count = db.add_items(site["id"], [
+            {"title": "No link"},
+            {},
+        ])
+        assert count == 0
+
+    def test_items_with_empty_link_are_skipped(self, db):
+        site = db.add_site("https://example.com", "Example")
+        count = db.add_items(site["id"], [
+            {"title": "Empty link", "link": ""},
+        ])
+        assert count == 0
 
 
 class TestGetNewItems:

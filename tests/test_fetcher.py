@@ -41,6 +41,14 @@ class TestDetectFeedUrl:
         """
         assert detect_feed_url("https://example.com", html) is None
 
+    def test_handles_malformed_html(self):
+        html = "<html><head><link rel='alternate' type='application/rss+xml' href='/feed'><<<<broken"
+        result = detect_feed_url("https://example.com", html)
+        assert result == "https://example.com/feed"
+
+    def test_handles_empty_html(self):
+        assert detect_feed_url("https://example.com", "") is None
+
 
 class TestParseRssItems:
     def test_extracts_items_from_rss(self):
@@ -97,6 +105,15 @@ class TestParseRssItems:
         items = parse_rss_items("this is not xml at all")
         assert items == []
 
+    def test_returns_empty_for_valid_but_empty_feed(self):
+        rss_xml = """<?xml version="1.0"?>
+        <rss version="2.0">
+          <channel><title>Empty Feed</title></channel>
+        </rss>
+        """
+        items = parse_rss_items(rss_xml)
+        assert items == []
+
 
 class TestScrapeLinks:
     def test_extracts_links_from_page(self):
@@ -148,6 +165,11 @@ class TestScrapeLinks:
         assert "javascript:void(0)" not in hrefs
         # Fragment-only links should be excluded
         assert "#section" not in hrefs
+
+    def test_empty_page_returns_no_links(self):
+        html = "<html><body><p>No links here</p></body></html>"
+        links = scrape_links("https://example.com", html)
+        assert links == []
 
     def test_deduplicates_links(self):
         html = """

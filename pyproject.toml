@@ -1,0 +1,21 @@
+[project]
+name = "rss-mcp"
+version = "0.1.0"
+description = "Universal RSS feed tracker with MCP interface"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "beautifulsoup4>=4.14.3",
+    "feedparser>=6.0.12",
+    "httpx>=0.28.1",
+    "mcp>=1.26.0",
+    "playwright>=1.58.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

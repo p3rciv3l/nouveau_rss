@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: nouveau-rss
+    runtime: docker
+    plan: free
+    envVars:
+      - key: NOUVEAU_RSS_API_KEY
+        generateValue: true

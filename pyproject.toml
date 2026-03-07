@@ -3,7 +3,7 @@ name = "rss-mcp"
 version = "0.1.0"
 description = "Universal RSS feed tracker with MCP interface"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.14.3",
     "feedparser>=6.0.12",

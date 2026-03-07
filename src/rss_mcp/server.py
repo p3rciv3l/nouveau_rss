@@ -2,9 +2,12 @@ from pathlib import Path
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from playwright.async_api import async_playwright
 
 from .fetcher import detect_feed_url, parse_rss_items, scrape_links
 from .storage import Storage
+
+MIN_LINKS_FOR_HTTP = 3
 
 DB_PATH = Path(__file__).parent.parent.parent / "feeds.db"
 
@@ -37,6 +40,19 @@ async def fetch_feed_xml(feed_url: str) -> str:
         return resp.text
 
 
+async def fetch_page_playwright(url: str) -> str:
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        context = await browser.new_context()
+        page = await context.new_page()
+        await page.goto(url)
+        await page.wait_for_load_state("networkidle")
+        html = await page.content()
+        await context.close()
+        await browser.close()
+        return html
+
+
 @mcp.tool()
 async def add_site(url: str, name: str | None = None) -> str:
     """Start tracking a website for new links. Give it any URL — it will auto-detect RSS or scrape the page."""
@@ -66,8 +82,20 @@ async def add_site(url: str, name: str | None = None) -> str:
             count = 0
         return f"Now tracking '{name}' via RSS feed ({count} existing items catalogued)"
     else:
-        site = db.add_site(url, name)
         items = scrape_links(url, html)
+        use_pw = False
+        if len(items) < MIN_LINKS_FOR_HTTP:
+            try:
+                html = await fetch_page_playwright(url)
+                pw_items = scrape_links(url, html)
+                if len(pw_items) > len(items):
+                    items = pw_items
+                    use_pw = True
+            except Exception:
+                pass  # stick with HTTP results
+        site = db.add_site(url, name)
+        if use_pw:
+            db.set_use_playwright(site["id"], True)
         count = db.add_items(site["id"], items, baseline=True)
         return f"Now tracking '{name}' via page scraping ({count} existing links catalogued)"
 
@@ -107,6 +135,9 @@ async def refresh_sites() -> dict[str, int | str]:
             if site["feed_url"]:
                 xml = await fetch_feed_xml(site["feed_url"])
                 items = parse_rss_items(xml)
+            elif site.get("use_playwright"):
+                html = await fetch_page_playwright(site["url"])
+                items = scrape_links(site["url"], html)
             else:
                 html = await fetch_page(site["url"])
                 items = scrape_links(site["url"], html)

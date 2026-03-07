@@ -52,8 +52,12 @@ class Storage:
         self._db.commit()
 
     def list_sites(self) -> list[dict]:
-        rows = self._db.execute("SELECT id, url, name, feed_url, last_checked FROM sites ORDER BY name").fetchall()
+        rows = self._db.execute("SELECT id, url, name, feed_url, use_playwright, last_checked FROM sites ORDER BY name").fetchall()
         return [dict(r) for r in rows]
+
+    def set_use_playwright(self, site_id: int, use: bool):
+        self._db.execute("UPDATE sites SET use_playwright=? WHERE id=?", (1 if use else 0, site_id))
+        self._db.commit()
 
     def add_items(self, site_id: int, items: list[dict], baseline: bool = False) -> int:
         count = 0

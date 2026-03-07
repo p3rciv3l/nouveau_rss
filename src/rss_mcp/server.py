@@ -195,8 +195,8 @@ if __name__ == "__main__":
         mcp.settings.host = "0.0.0.0"
         mcp.settings.port = port
 
-        # Wrap the MCP app with API key auth
-        app = mcp.streamable_http_app()
+        # Wrap the MCP app with API key auth (SSE for Poke compatibility)
+        app = mcp.sse_app()
         app.add_middleware(ApiKeyMiddleware, api_key=api_key)
 
         import uvicorn

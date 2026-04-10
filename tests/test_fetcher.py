@@ -1,5 +1,4 @@
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
 from src.rss_mcp.fetcher import detect_feed_url, parse_rss_items, scrape_links
 
 
@@ -49,6 +48,16 @@ class TestDetectFeedUrl:
     def test_handles_empty_html(self):
         assert detect_feed_url("https://example.com", "") is None
 
+    def test_detects_direct_rss_documents(self):
+        rss_xml = """<?xml version="1.0" encoding="utf-8"?>
+        <rss version="2.0">
+          <channel>
+            <title>Example Feed</title>
+          </channel>
+        </rss>
+        """
+        assert detect_feed_url("https://example.com/feed.xml", rss_xml) == "https://example.com/feed.xml"
+
 
 class TestParseRssItems:
     def test_extracts_items_from_rss(self):
@@ -76,6 +85,7 @@ class TestParseRssItems:
     def test_extracts_items_from_atom(self):
         atom_xml = """<?xml version="1.0"?>
         <feed xmlns="http://www.w3.org/2005/Atom">
+          <link href="https://example.com" rel="alternate"/>
           <title>Test Feed</title>
           <entry>
             <title>Atom Post</title>
@@ -87,6 +97,21 @@ class TestParseRssItems:
         assert len(items) == 1
         assert items[0]["title"] == "Atom Post"
         assert items[0]["link"] == "https://example.com/atom-1"
+
+    def test_resolves_relative_atom_links_from_feed_base(self):
+        atom_xml = """<?xml version="1.0"?>
+        <feed xmlns="http://www.w3.org/2005/Atom">
+          <link href="https://example.com" rel="alternate"/>
+          <title>Test Feed</title>
+          <entry>
+            <title>Relative Atom Post</title>
+            <link href="/atom-2" rel="alternate"/>
+          </entry>
+        </feed>
+        """
+        items = parse_rss_items(atom_xml)
+        assert len(items) == 1
+        assert items[0]["link"] == "https://example.com/atom-2"
 
     def test_skips_entries_without_link(self):
         rss_xml = """<?xml version="1.0"?>
@@ -152,32 +177,43 @@ class TestScrapeLinks:
         <html><body>
             <a href="/">Home</a>
             <a href="/about">About</a>
+            <a href="/contact">Contact</a>
+            <a href="/privacy">Privacy</a>
+            <a href="/blog">Blog</a>
+            <a href="/rss.xml">RSS</a>
             <a href="#section">Jump</a>
             <a href="mailto:test@example.com">Email</a>
             <a href="javascript:void(0)">Click</a>
+            <a href="tel:+15551212">Call</a>
             <a href="https://example.com/real-article">Real Article</a>
         </body></html>
         """
         links = scrape_links("https://example.com", html)
         hrefs = {l["link"] for l in links}
         assert "https://example.com/real-article" in hrefs
+        assert "https://example.com/about" not in hrefs
+        assert "https://example.com/contact" not in hrefs
+        assert "https://example.com/privacy" not in hrefs
+        assert "https://example.com/blog" not in hrefs
+        assert "https://example.com/rss.xml" not in hrefs
         assert "mailto:test@example.com" not in hrefs
         assert "javascript:void(0)" not in hrefs
+        assert "tel:+15551212" not in hrefs
         # Fragment-only links should be excluded
         assert "#section" not in hrefs
 
-    def test_empty_page_returns_no_links(self):
-        html = "<html><body><p>No links here</p></body></html>"
-        links = scrape_links("https://example.com", html)
-        assert links == []
-
-    def test_deduplicates_links(self):
+    def test_strips_fragments_and_deduplicates_equivalent_urls(self):
         html = """
         <html><body>
-            <a href="https://example.com/post-1">Post 1</a>
+            <a href="https://example.com/post-1#comments">Post 1</a>
             <a href="https://example.com/post-1">Post 1 Again</a>
         </body></html>
         """
         links = scrape_links("https://example.com", html)
         urls = [l["link"] for l in links]
         assert urls.count("https://example.com/post-1") == 1
+
+    def test_empty_page_returns_no_links(self):
+        html = "<html><body><p>No links here</p></body></html>"
+        links = scrape_links("https://example.com", html)
+        assert links == []

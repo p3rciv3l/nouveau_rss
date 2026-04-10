@@ -51,6 +51,17 @@ class TestRemoveSite:
         with pytest.raises(ValueError, match="not found"):
             db.remove_site("https://nonexistent.com")
 
+    def test_site_item_foreign_key_cascades(self, db):
+        site = db.add_site("https://anthropic.com/research", "Anthropic")
+        db.add_items(site["id"], [
+            {"title": "Post 1", "link": "https://anthropic.com/post-1"},
+        ])
+
+        db._db.execute("DELETE FROM sites WHERE id=?", (site["id"],))
+        db._db.commit()
+
+        assert db.get_new_items() == []
+
 
 class TestListSites:
     def test_list_empty(self, db):
@@ -79,6 +90,10 @@ class TestSetUsePlaywright:
         sites = db.list_sites()
         assert sites[0]["use_playwright"] == 0
 
+    def test_set_use_playwright_missing_site_raises(self, db):
+        with pytest.raises(ValueError, match="not found"):
+            db.set_use_playwright(9999, True)
+
 
 class TestListSitesFields:
     def test_list_sites_includes_use_playwright(self, db):
@@ -90,6 +105,13 @@ class TestListSitesFields:
         db.add_site("https://example.com", "Example", feed_url="https://example.com/feed")
         sites = db.list_sites()
         assert sites[0]["feed_url"] == "https://example.com/feed"
+
+
+class TestSchema:
+    def test_items_indexes_exist(self, db):
+        rows = db._db.execute("PRAGMA index_list('items')").fetchall()
+        index_names = {row["name"] for row in rows}
+        assert {"idx_items_notified_id", "idx_items_site_id"}.issubset(index_names)
 
 
 class TestAddItems:
@@ -186,3 +208,6 @@ class TestGetNewItems:
         ], baseline=True)
         items = db.get_new_items()
         assert items == []
+
+    def test_get_new_items_empty_is_safe(self, db):
+        assert db.get_new_items() == []

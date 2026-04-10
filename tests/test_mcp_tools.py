@@ -36,6 +36,25 @@ class TestAddSite:
         assert sites[0]["feed_url"] == "https://example.com/feed.xml"
 
     @pytest.mark.anyio
+    async def test_add_site_with_direct_feed_url(self, db):
+        """A raw feed URL should be treated as a feed, not scraped as HTML."""
+        fake_feed = """<?xml version="1.0"?>
+        <rss version="2.0"><channel>
+            <item><title>Post 1</title><link>https://example.com/post-1</link></item>
+        </channel></rss>
+        """
+        with patch("src.rss_mcp.server.fetch_page", new_callable=AsyncMock, return_value=fake_feed):
+            result = await add_site("https://example.com/feed.xml", "Example")
+
+        assert "RSS feed" in result
+        sites = db.list_sites()
+        assert len(sites) == 1
+        assert sites[0]["feed_url"] == "https://example.com/feed.xml"
+        rows = db._db.execute("SELECT link, notified FROM items").fetchall()
+        assert rows[0]["link"] == "https://example.com/post-1"
+        assert rows[0]["notified"] == 1
+
+    @pytest.mark.anyio
     async def test_add_site_without_rss_scrapes_baseline(self, db):
         """When no RSS, scrape links as baseline (marked notified)."""
         fake_html = """
@@ -159,3 +178,13 @@ class TestCheckNew:
         with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}):
             result = await check_new()
         assert "(untitled)" in result
+
+    @pytest.mark.anyio
+    async def test_check_new_sanitizes_delimiters_in_titles(self, db):
+        site = db.add_site("https://example.com", "Example")
+        db.add_items(site["id"], [
+            {"title": "A | B\nC", "link": "https://example.com/post"},
+        ])
+        with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}):
+            result = await check_new()
+        assert "- Example | A / B C | https://example.com/post" in result

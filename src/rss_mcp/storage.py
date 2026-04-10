@@ -6,6 +6,7 @@ class Storage:
     def __init__(self, db_path: str | Path):
         self._db = sqlite3.connect(str(db_path))
         self._db.row_factory = sqlite3.Row
+        self._db.execute("PRAGMA busy_timeout=5000")
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA foreign_keys=ON")
         self._create_tables()
@@ -17,7 +18,7 @@ class Storage:
                 url TEXT UNIQUE NOT NULL,
                 name TEXT NOT NULL,
                 feed_url TEXT,
-                use_playwright INTEGER NOT NULL DEFAULT 0,
+                use_playwright INTEGER NOT NULL DEFAULT 0 CHECK (use_playwright IN (0, 1)),
                 last_checked REAL
             );
             CREATE TABLE IF NOT EXISTS items (
@@ -26,9 +27,11 @@ class Storage:
                 title TEXT,
                 link TEXT UNIQUE NOT NULL,
                 discovered_at REAL NOT NULL DEFAULT (unixepoch('now')),
-                notified INTEGER NOT NULL DEFAULT 0,
-                FOREIGN KEY (site_id) REFERENCES sites(id)
+                notified INTEGER NOT NULL DEFAULT 0 CHECK (notified IN (0, 1)),
+                FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
             );
+            CREATE INDEX IF NOT EXISTS idx_items_notified_id ON items(notified, id);
+            CREATE INDEX IF NOT EXISTS idx_items_site_id ON items(site_id);
         """)
 
     def add_site(self, url: str, name: str | None = None, feed_url: str | None = None) -> dict:
@@ -56,7 +59,9 @@ class Storage:
         return [dict(r) for r in rows]
 
     def set_use_playwright(self, site_id: int, use: bool):
-        self._db.execute("UPDATE sites SET use_playwright=? WHERE id=?", (1 if use else 0, site_id))
+        cursor = self._db.execute("UPDATE sites SET use_playwright=? WHERE id=?", (1 if use else 0, site_id))
+        if cursor.rowcount == 0:
+            raise ValueError(f"Site not found: {site_id}")
         self._db.commit()
 
     def add_items(self, site_id: int, items: list[dict], baseline: bool = False) -> int:
@@ -87,11 +92,14 @@ class Storage:
             ORDER BY i.id ASC
         """).fetchall()
         items = [dict(r) for r in rows]
-        if items:
-            ids = [i["id"] for i in items]
+        if not items:
+            return items
+
+        ids = [i["id"] for i in items]
+        placeholders = ",".join("?" for _ in ids)
+        with self._db:
             self._db.execute(
-                f"UPDATE items SET notified=1 WHERE id IN ({','.join('?' * len(ids))})",
+                f"UPDATE items SET notified=1 WHERE id IN ({placeholders}) AND notified=0",
                 ids,
             )
-            self._db.commit()
         return items

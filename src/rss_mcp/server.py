@@ -1,5 +1,8 @@
 import os
+import re
 from pathlib import Path
+from html import unescape
+from urllib.parse import urldefrag, urljoin, urlparse
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -12,6 +15,39 @@ from .fetcher import detect_feed_url, parse_rss_items, scrape_links
 from .storage import Storage
 
 MIN_LINKS_FOR_HTTP = 3
+ALLOWED_URL_SCHEMES = {"http", "https"}
+BOILERPLATE_PATH_SEGMENTS = {
+    "about",
+    "archive",
+    "archives",
+    "author",
+    "authors",
+    "category",
+    "categories",
+    "comments",
+    "contact",
+    "feed",
+    "help",
+    "login",
+    "logout",
+    "newsletter",
+    "page",
+    "privacy",
+    "register",
+    "rss",
+    "search",
+    "share",
+    "signin",
+    "sign-in",
+    "signup",
+    "sign-up",
+    "sitemap",
+    "subscribe",
+    "tag",
+    "tags",
+    "terms",
+}
+WHITESPACE_RE = re.compile(r"\s+")
 
 DB_PATH = Path(__file__).parent.parent.parent / "feeds.db"
 
@@ -30,6 +66,67 @@ def get_storage() -> Storage:
     if _storage is None:
         _storage = Storage(DB_PATH)
     return _storage
+
+
+def _clean_text(value: str | None) -> str:
+    text = unescape((value or "").replace("\x00", " "))
+    return WHITESPACE_RE.sub(" ", text).strip()
+
+
+def _format_output_field(value: str | None) -> str:
+    return _clean_text(value).replace("|", "/")
+
+
+def _normalize_url(raw_url: str | None, base_url: str) -> str | None:
+    if not raw_url:
+        return None
+
+    candidate = raw_url.strip()
+    if not candidate:
+        return None
+
+    candidate = urljoin(base_url, candidate)
+    candidate, _ = urldefrag(candidate)
+
+    parsed = urlparse(candidate)
+    if parsed.scheme not in ALLOWED_URL_SCHEMES or not parsed.netloc:
+        return None
+
+    return parsed.geturl()
+
+
+def _is_boilerplate_url(url: str) -> bool:
+    parsed = urlparse(url)
+    path = parsed.path.strip("/").lower()
+    if not path:
+        return True
+
+    segments = {segment for segment in path.split("/") if segment}
+    return bool(segments & BOILERPLATE_PATH_SEGMENTS)
+
+
+def _prepare_items(base_url: str, items: list[dict]) -> list[dict]:
+    prepared: list[dict] = []
+    seen: set[str] = set()
+    for item in items:
+        link = _normalize_url(item.get("link"), base_url)
+        if not link or link in seen or _is_boilerplate_url(link):
+            continue
+        seen.add(link)
+        prepared.append({
+            "title": _clean_text(item.get("title")),
+            "link": link,
+        })
+    return prepared
+
+
+def _looks_like_feed_document(body: str) -> bool:
+    prefix = body.lstrip()[:64].lower()
+    return prefix.startswith("<?xml") or prefix.startswith("<rss") or prefix.startswith("<feed") or prefix.startswith("<rdf:rdf")
+
+
+def _parse_feed_items(feed_url: str, xml: str) -> list[dict]:
+    return _prepare_items(feed_url, parse_rss_items(xml, source_url=feed_url))
 
 
 async def fetch_page(url: str) -> str:
@@ -63,7 +160,7 @@ async def fetch_page_playwright(url: str) -> str:
 async def add_site(url: str, name: str | None = None) -> str:
     """Start tracking a website for new links. Give it any URL — it will auto-detect RSS or scrape the page."""
     db = get_storage()
-    name = name or url
+    name = _clean_text(name) or url
 
     # Check for duplicate
     existing = [s for s in db.list_sites() if s["url"] == url]
@@ -75,25 +172,26 @@ async def add_site(url: str, name: str | None = None) -> str:
     except Exception as e:
         return f"Failed to fetch {url}: {e}"
 
-    # Try to detect RSS/Atom feed
     feed_url = detect_feed_url(url, html)
+    is_direct_feed = _looks_like_feed_document(html)
 
-    if feed_url:
-        site = db.add_site(url, name, feed_url=feed_url)
+    if feed_url or is_direct_feed:
+        resolved_feed_url = feed_url or url
+        site = db.add_site(url, name, feed_url=resolved_feed_url)
         try:
-            xml = await fetch_feed_xml(feed_url)
-            items = parse_rss_items(xml)
+            xml = html if is_direct_feed else await fetch_feed_xml(resolved_feed_url)
+            items = _parse_feed_items(resolved_feed_url, xml)
             count = db.add_items(site["id"], items, baseline=True)
         except Exception:
             count = 0
         return f"Now tracking '{name}' via RSS feed ({count} existing items catalogued)"
     else:
-        items = scrape_links(url, html)
+        items = _prepare_items(url, scrape_links(url, html))
         use_pw = False
         if len(items) < MIN_LINKS_FOR_HTTP:
             try:
                 html = await fetch_page_playwright(url)
-                pw_items = scrape_links(url, html)
+                pw_items = _prepare_items(url, scrape_links(url, html))
                 if len(pw_items) > len(items):
                     items = pw_items
                     use_pw = True
@@ -127,7 +225,7 @@ async def list_sites() -> str:
     lines = []
     for s in sites:
         method = "RSS" if s["feed_url"] else "scraping"
-        lines.append(f"- {s['name']} ({method})\n  {s['url']}")
+        lines.append(f"- {_format_output_field(s['name'])} ({method})\n  {_format_output_field(s['url'])}")
     return "\n".join(lines)
 
 
@@ -140,13 +238,19 @@ async def refresh_sites() -> dict[str, int | str]:
         try:
             if site["feed_url"]:
                 xml = await fetch_feed_xml(site["feed_url"])
-                items = parse_rss_items(xml)
+                items = _parse_feed_items(site["feed_url"], xml)
             elif site.get("use_playwright"):
                 html = await fetch_page_playwright(site["url"])
-                items = scrape_links(site["url"], html)
+                if _looks_like_feed_document(html):
+                    items = _parse_feed_items(site["url"], html)
+                else:
+                    items = _prepare_items(site["url"], scrape_links(site["url"], html))
             else:
                 html = await fetch_page(site["url"])
-                items = scrape_links(site["url"], html)
+                if _looks_like_feed_document(html):
+                    items = _parse_feed_items(site["url"], html)
+                else:
+                    items = _prepare_items(site["url"], scrape_links(site["url"], html))
             count = db.add_items(site["id"], items)
             results[site["name"]] = count
         except Exception:
@@ -164,8 +268,9 @@ async def check_new() -> str:
         return "No new content."
     lines = []
     for item in items:
-        title = item["title"] or "(untitled)"
-        lines.append(f"- {item['source']} | {title} | {item['link']}")
+        source = _format_output_field(item["source"]) or "(unknown source)"
+        title = _format_output_field(item["title"]) or "(untitled)"
+        lines.append(f"- {source} | {title} | {_format_output_field(item['link'])}")
     return "\n".join(lines)
 
 

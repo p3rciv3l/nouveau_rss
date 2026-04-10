@@ -120,8 +120,9 @@ class TestCheckNewWithRefresh:
              patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
             result = await check_new()
 
-        assert "Fresh Post" in result.content[0].text
-        assert "https://example.com/fresh" in result.content[0].text
+        assert result.content[0].text == "1 new item. Use structuredContent.items."
+        assert result.structuredContent["items"][0]["title"] == "Fresh Post"
+        assert result.structuredContent["items"][0]["link"] == "https://example.com/fresh"
 
     @pytest.mark.anyio
     async def test_check_new_still_works_when_refresh_fails(self, db):
@@ -151,4 +152,5 @@ class TestCheckNewWithRefresh:
              patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
             result = await check_new()
 
-        assert "Stored Post" in result.content[0].text
+        assert result.content[0].text == "1 new item. Use structuredContent.items."
+        assert result.structuredContent["items"][0]["title"] == "Stored Post"

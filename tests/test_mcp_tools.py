@@ -154,9 +154,7 @@ class TestCheckNew:
             result = await check_new()
         assert result.structuredContent["summary"] == "1 new item."
         assert result.structuredContent["items"][0]["validation"]["ok"] is True
-        assert "New Post" in result.content[0].text
-        assert "https://example.com/new" in result.content[0].text
-        assert "Example" in result.content[0].text
+        assert result.content[0].text == "1 new item. Use structuredContent.items."
 
     @pytest.mark.anyio
     async def test_check_new_empty(self, db):
@@ -215,7 +213,7 @@ class TestCheckNew:
         with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}), \
              patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
             result = await check_new()
-        assert "- Example | My Post | https://example.com/my-post" in result.content[0].text
+        assert result.content[0].text == "1 new item. Use structuredContent.items."
 
     @pytest.mark.anyio
     async def test_check_new_untitled_items_show_placeholder(self, db):
@@ -240,7 +238,8 @@ class TestCheckNew:
         with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}), \
              patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
             result = await check_new()
-        assert "(untitled)" in result.content[0].text
+        assert result.structuredContent["items"][0]["title"] == "(untitled)"
+        assert result.content[0].text == "1 new item. Use structuredContent.items."
 
     @pytest.mark.anyio
     async def test_check_new_sanitizes_delimiters_in_titles(self, db):
@@ -265,7 +264,8 @@ class TestCheckNew:
         with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}), \
              patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
             result = await check_new()
-        assert "- Example | A / B C | https://example.com/post" in result.content[0].text
+        assert result.structuredContent["items"][0]["title"] == "A / B C"
+        assert result.content[0].text == "1 new item. Use structuredContent.items."
 
     @pytest.mark.anyio
     async def test_check_new_exposes_structured_validation_metadata(self, db):
@@ -295,3 +295,4 @@ class TestCheckNew:
         item = result.structuredContent["items"][0]
         assert item["validation"]["ok"] is False
         assert item["validation"]["final_url"] == "https://example.com/moved"
+        assert result.content[0].text == "1 new item. Use structuredContent.items."

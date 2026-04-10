@@ -362,16 +362,13 @@ async def check_new() -> Annotated[CallToolResult, CheckNewPayload]:
 
     validated_items = await _validate_new_items(items)
     summary = f"{len(validated_items)} new item{'s' if len(validated_items) != 1 else ''}."
-    lines = []
-    for item in validated_items:
-        lines.append(f"- {item['source']} | {item['title']} | {item['link']}")
     payload = {
         "summary": summary,
         "refresh": refresh,
         "items": validated_items,
     }
     return CallToolResult(
-        content=[TextContent(type="text", text="\n".join(lines))],
+        content=[TextContent(type="text", text=f"{summary} Use structuredContent.items.")],
         structuredContent=payload,
         isError=False,
     )

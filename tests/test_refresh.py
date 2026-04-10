@@ -102,11 +102,26 @@ class TestCheckNewWithRefresh:
             <item><title>Fresh Post</title><link>https://example.com/fresh</link></item>
         </channel></rss>
         """
-        with patch("src.rss_mcp.server.fetch_feed_xml", new_callable=AsyncMock, return_value=fake_rss):
+        validation_items = [{
+            "source": "Example",
+            "source_url": "https://example.com",
+            "title": "Fresh Post",
+            "link": "https://example.com/fresh",
+            "validation": {
+                "checked": True,
+                "ok": True,
+                "final_url": "https://example.com/fresh",
+                "status_code": 200,
+                "content_type": "text/html",
+                "error": None,
+            },
+        }]
+        with patch("src.rss_mcp.server.fetch_feed_xml", new_callable=AsyncMock, return_value=fake_rss), \
+             patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
             result = await check_new()
 
-        assert "Fresh Post" in result
-        assert "https://example.com/fresh" in result
+        assert "Fresh Post" in result.content[0].text
+        assert "https://example.com/fresh" in result.content[0].text
 
     @pytest.mark.anyio
     async def test_check_new_still_works_when_refresh_fails(self, db):
@@ -117,8 +132,23 @@ class TestCheckNewWithRefresh:
         ])
 
         import httpx
+        validation_items = [{
+            "source": "Example",
+            "source_url": "https://example.com",
+            "title": "Stored Post",
+            "link": "https://example.com/stored",
+            "validation": {
+                "checked": True,
+                "ok": True,
+                "final_url": "https://example.com/stored",
+                "status_code": 200,
+                "content_type": "text/html",
+                "error": None,
+            },
+        }]
         with patch("src.rss_mcp.server.fetch_page", new_callable=AsyncMock,
-                   side_effect=httpx.HTTPError("fail")):
+                   side_effect=httpx.HTTPError("fail")), \
+             patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
             result = await check_new()
 
-        assert "Stored Post" in result
+        assert "Stored Post" in result.content[0].text

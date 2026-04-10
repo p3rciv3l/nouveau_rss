@@ -1,12 +1,15 @@
+import asyncio
 import os
 import re
 from pathlib import Path
 from html import unescape
+from typing import Annotated, Any, TypedDict
 from urllib.parse import urldefrag, urljoin, urlparse
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import CallToolResult, TextContent
 from playwright.async_api import async_playwright
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -48,6 +51,32 @@ BOILERPLATE_PATH_SEGMENTS = {
     "terms",
 }
 WHITESPACE_RE = re.compile(r"\s+")
+LINK_VALIDATION_CONCURRENCY = 5
+VALIDATION_TIMEOUT_SECONDS = 15
+VALIDATION_USER_AGENT = "nouveau-rss/0.2"
+
+
+class LinkValidation(TypedDict):
+    checked: bool
+    ok: bool
+    final_url: str | None
+    status_code: int | None
+    content_type: str | None
+    error: str | None
+
+
+class CheckNewItem(TypedDict):
+    source: str
+    source_url: str
+    title: str
+    link: str
+    validation: LinkValidation
+
+
+class CheckNewPayload(TypedDict):
+    summary: str
+    refresh: dict[str, int | str]
+    items: list[CheckNewItem]
 
 DB_PATH = Path(__file__).parent.parent.parent / "feeds.db"
 
@@ -156,6 +185,61 @@ async def fetch_page_playwright(url: str) -> str:
         return html
 
 
+async def _validate_link(
+    client: httpx.AsyncClient,
+    item: dict[str, Any],
+    semaphore: asyncio.Semaphore,
+) -> CheckNewItem:
+    async with semaphore:
+        source = _format_output_field(item["source"]) or "(unknown source)"
+        title = _format_output_field(item["title"]) or "(untitled)"
+        link = _format_output_field(item["link"])
+        source_url = _format_output_field(item.get("source_url")) or ""
+
+        validation: LinkValidation = {
+            "checked": True,
+            "ok": False,
+            "final_url": None,
+            "status_code": None,
+            "content_type": None,
+            "error": None,
+        }
+
+        try:
+            response = await client.get(link)
+            validation["status_code"] = response.status_code
+            validation["final_url"] = str(response.url)
+            validation["content_type"] = response.headers.get("content-type")
+            validation["ok"] = response.is_success
+            if not response.is_success:
+                validation["error"] = f"http_{response.status_code}"
+        except Exception as exc:
+            validation["error"] = str(exc)
+
+        return {
+            "source": source,
+            "source_url": source_url,
+            "title": title,
+            "link": link,
+            "validation": validation,
+        }
+
+
+async def _validate_new_items(items: list[dict[str, Any]]) -> list[CheckNewItem]:
+    if not items:
+        return []
+
+    timeout = httpx.Timeout(VALIDATION_TIMEOUT_SECONDS)
+    semaphore = asyncio.Semaphore(LINK_VALIDATION_CONCURRENCY)
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=timeout,
+        headers={"User-Agent": VALIDATION_USER_AGENT},
+    ) as client:
+        tasks = [_validate_link(client, item, semaphore) for item in items]
+        return await asyncio.gather(*tasks)
+
+
 @mcp.tool()
 async def add_site(url: str, name: str | None = None) -> str:
     """Start tracking a website for new links. Give it any URL — it will auto-detect RSS or scrape the page."""
@@ -259,19 +343,38 @@ async def refresh_sites() -> dict[str, int | str]:
 
 
 @mcp.tool()
-async def check_new() -> str:
+async def check_new() -> Annotated[CallToolResult, CheckNewPayload]:
     """Get all new links since last check. Refreshes all sites first, then returns new items."""
-    await refresh_sites()
+    refresh = await refresh_sites()
     db = get_storage()
     items = db.get_new_items()
     if not items:
-        return "No new content."
+        payload: CheckNewPayload = {
+            "summary": "No new content.",
+            "refresh": refresh,
+            "items": [],
+        }
+        return CallToolResult(
+            content=[TextContent(type="text", text="No new content.")],
+            structuredContent=payload,
+            isError=False,
+        )
+
+    validated_items = await _validate_new_items(items)
+    summary = f"{len(validated_items)} new item{'s' if len(validated_items) != 1 else ''}."
     lines = []
-    for item in items:
-        source = _format_output_field(item["source"]) or "(unknown source)"
-        title = _format_output_field(item["title"]) or "(untitled)"
-        lines.append(f"- {source} | {title} | {_format_output_field(item['link'])}")
-    return "\n".join(lines)
+    for item in validated_items:
+        lines.append(f"- {item['source']} | {item['title']} | {item['link']}")
+    payload = {
+        "summary": summary,
+        "refresh": refresh,
+        "items": validated_items,
+    }
+    return CallToolResult(
+        content=[TextContent(type="text", text="\n".join(lines))],
+        structuredContent=payload,
+        isError=False,
+    )
 
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):

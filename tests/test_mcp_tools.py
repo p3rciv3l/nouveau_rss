@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import patch, AsyncMock
 from src.rss_mcp.server import add_site, remove_site, list_sites, check_new
 
 
@@ -135,17 +135,35 @@ class TestCheckNew:
         db.add_items(site["id"], [
             {"title": "New Post", "link": "https://example.com/new"},
         ])
-        with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}):
+        validation_items = [{
+            "source": "Example",
+            "source_url": "https://example.com",
+            "title": "New Post",
+            "link": "https://example.com/new",
+            "validation": {
+                "checked": True,
+                "ok": True,
+                "final_url": "https://example.com/new",
+                "status_code": 200,
+                "content_type": "text/html",
+                "error": None,
+            },
+        }]
+        with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}), \
+             patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
             result = await check_new()
-        assert "New Post" in result
-        assert "https://example.com/new" in result
-        assert "Example" in result
+        assert result.structuredContent["summary"] == "1 new item."
+        assert result.structuredContent["items"][0]["validation"]["ok"] is True
+        assert "New Post" in result.content[0].text
+        assert "https://example.com/new" in result.content[0].text
+        assert "Example" in result.content[0].text
 
     @pytest.mark.anyio
     async def test_check_new_empty(self, db):
         with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}):
             result = await check_new()
-        assert "no new" in result.lower()
+        assert result.structuredContent["summary"] == "No new content."
+        assert "no new" in result.content[0].text.lower()
 
     @pytest.mark.anyio
     async def test_check_new_marks_as_read(self, db):
@@ -153,10 +171,25 @@ class TestCheckNew:
         db.add_items(site["id"], [
             {"title": "Post", "link": "https://example.com/post"},
         ])
-        with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}):
+        validation_items = [{
+            "source": "Example",
+            "source_url": "https://example.com",
+            "title": "Post",
+            "link": "https://example.com/post",
+            "validation": {
+                "checked": True,
+                "ok": True,
+                "final_url": "https://example.com/post",
+                "status_code": 200,
+                "content_type": "text/html",
+                "error": None,
+            },
+        }]
+        with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}), \
+             patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
             await check_new()
             result = await check_new()
-        assert "no new" in result.lower()
+        assert "no new" in result.content[0].text.lower()
 
     @pytest.mark.anyio
     async def test_check_new_output_format(self, db):
@@ -165,9 +198,24 @@ class TestCheckNew:
         db.add_items(site["id"], [
             {"title": "My Post", "link": "https://example.com/my-post"},
         ])
-        with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}):
+        validation_items = [{
+            "source": "Example",
+            "source_url": "https://example.com",
+            "title": "My Post",
+            "link": "https://example.com/my-post",
+            "validation": {
+                "checked": True,
+                "ok": True,
+                "final_url": "https://example.com/my-post",
+                "status_code": 200,
+                "content_type": "text/html",
+                "error": None,
+            },
+        }]
+        with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}), \
+             patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
             result = await check_new()
-        assert "- Example | My Post | https://example.com/my-post" in result
+        assert "- Example | My Post | https://example.com/my-post" in result.content[0].text
 
     @pytest.mark.anyio
     async def test_check_new_untitled_items_show_placeholder(self, db):
@@ -175,9 +223,24 @@ class TestCheckNew:
         db.add_items(site["id"], [
             {"link": "https://example.com/no-title"},
         ])
-        with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}):
+        validation_items = [{
+            "source": "Example",
+            "source_url": "https://example.com",
+            "title": "(untitled)",
+            "link": "https://example.com/no-title",
+            "validation": {
+                "checked": True,
+                "ok": True,
+                "final_url": "https://example.com/no-title",
+                "status_code": 200,
+                "content_type": "text/html",
+                "error": None,
+            },
+        }]
+        with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}), \
+             patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
             result = await check_new()
-        assert "(untitled)" in result
+        assert "(untitled)" in result.content[0].text
 
     @pytest.mark.anyio
     async def test_check_new_sanitizes_delimiters_in_titles(self, db):
@@ -185,6 +248,50 @@ class TestCheckNew:
         db.add_items(site["id"], [
             {"title": "A | B\nC", "link": "https://example.com/post"},
         ])
-        with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}):
+        validation_items = [{
+            "source": "Example",
+            "source_url": "https://example.com",
+            "title": "A / B C",
+            "link": "https://example.com/post",
+            "validation": {
+                "checked": True,
+                "ok": True,
+                "final_url": "https://example.com/post",
+                "status_code": 200,
+                "content_type": "text/html",
+                "error": None,
+            },
+        }]
+        with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}), \
+             patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
             result = await check_new()
-        assert "- Example | A / B C | https://example.com/post" in result
+        assert "- Example | A / B C | https://example.com/post" in result.content[0].text
+
+    @pytest.mark.anyio
+    async def test_check_new_exposes_structured_validation_metadata(self, db):
+        site = db.add_site("https://example.com", "Example")
+        db.add_items(site["id"], [
+            {"title": "Needs Review", "link": "https://example.com/bad"},
+        ])
+        validation_items = [{
+            "source": "Example",
+            "source_url": "https://example.com",
+            "title": "Needs Review",
+            "link": "https://example.com/bad",
+            "validation": {
+                "checked": True,
+                "ok": False,
+                "final_url": "https://example.com/moved",
+                "status_code": 404,
+                "content_type": "text/html",
+                "error": "http_404",
+            },
+        }]
+        with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={"Example": 1}), \
+             patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
+            result = await check_new()
+
+        assert result.structuredContent["refresh"] == {"Example": 1}
+        item = result.structuredContent["items"][0]
+        assert item["validation"]["ok"] is False
+        assert item["validation"]["final_url"] == "https://example.com/moved"

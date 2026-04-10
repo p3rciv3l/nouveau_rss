@@ -85,7 +85,7 @@ class Storage:
 
     def get_new_items(self) -> list[dict]:
         rows = self._db.execute("""
-            SELECT i.id, i.title, i.link, i.discovered_at, s.name as source
+            SELECT i.id, i.title, i.link, i.discovered_at, s.name as source, s.url as source_url
             FROM items i
             JOIN sites s ON i.site_id = s.id
             WHERE i.notified = 0

@@ -19,7 +19,8 @@ class Storage:
                 name TEXT NOT NULL,
                 feed_url TEXT,
                 use_playwright INTEGER NOT NULL DEFAULT 0 CHECK (use_playwright IN (0, 1)),
-                last_checked REAL
+                last_checked REAL,
+                last_error TEXT
             );
             CREATE TABLE IF NOT EXISTS items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,6 +34,12 @@ class Storage:
             CREATE INDEX IF NOT EXISTS idx_items_notified_id ON items(notified, id);
             CREATE INDEX IF NOT EXISTS idx_items_site_id ON items(site_id);
         """)
+        site_columns = {
+            row["name"] for row in self._db.execute("PRAGMA table_info('sites')").fetchall()
+        }
+        if "last_error" not in site_columns:
+            self._db.execute("ALTER TABLE sites ADD COLUMN last_error TEXT")
+            self._db.commit()
 
     def add_site(self, url: str, name: str | None = None, feed_url: str | None = None) -> dict:
         name = name or url
@@ -55,11 +62,23 @@ class Storage:
         self._db.commit()
 
     def list_sites(self) -> list[dict]:
-        rows = self._db.execute("SELECT id, url, name, feed_url, use_playwright, last_checked FROM sites ORDER BY name").fetchall()
+        rows = self._db.execute(
+            "SELECT id, url, name, feed_url, use_playwright, last_checked, last_error "
+            "FROM sites ORDER BY name"
+        ).fetchall()
         return [dict(r) for r in rows]
 
     def set_use_playwright(self, site_id: int, use: bool):
         cursor = self._db.execute("UPDATE sites SET use_playwright=? WHERE id=?", (1 if use else 0, site_id))
+        if cursor.rowcount == 0:
+            raise ValueError(f"Site not found: {site_id}")
+        self._db.commit()
+
+    def update_site_check_status(self, site_id: int, *, error: str | None = None):
+        cursor = self._db.execute(
+            "UPDATE sites SET last_checked=unixepoch('now'), last_error=? WHERE id=?",
+            (error, site_id),
+        )
         if cursor.rowcount == 0:
             raise ValueError(f"Site not found: {site_id}")
         self._db.commit()
@@ -91,15 +110,15 @@ class Storage:
             WHERE i.notified = 0
             ORDER BY i.id ASC
         """).fetchall()
-        items = [dict(r) for r in rows]
-        if not items:
-            return items
+        return [dict(r) for r in rows]
 
-        ids = [i["id"] for i in items]
-        placeholders = ",".join("?" for _ in ids)
+    def mark_items_notified(self, item_ids: list[int]) -> int:
+        if not item_ids:
+            return 0
+        placeholders = ",".join("?" for _ in item_ids)
         with self._db:
-            self._db.execute(
+            cursor = self._db.execute(
                 f"UPDATE items SET notified=1 WHERE id IN ({placeholders}) AND notified=0",
-                ids,
+                item_ids,
             )
-        return items
+        return cursor.rowcount

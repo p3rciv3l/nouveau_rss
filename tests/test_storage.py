@@ -177,14 +177,29 @@ class TestGetNewItems:
         items = db.get_new_items()
         assert items[0]["source"] == "Anthropic"
 
-    def test_new_items_marked_as_notified(self, db):
+    def test_get_new_items_does_not_mark_as_notified(self, db):
         site = db.add_site("https://anthropic.com/research", "Anthropic")
         db.add_items(site["id"], [
             {"title": "Post 1", "link": "https://anthropic.com/post-1"},
         ])
-        db.get_new_items()  # first call marks them
-        items = db.get_new_items()  # second call should be empty
-        assert items == []
+        first_items = db.get_new_items()
+        second_items = db.get_new_items()
+        assert len(first_items) == 1
+        assert len(second_items) == 1
+
+    def test_mark_items_notified_marks_only_selected_items(self, db):
+        site = db.add_site("https://anthropic.com/research", "Anthropic")
+        db.add_items(site["id"], [
+            {"title": "Post 1", "link": "https://anthropic.com/post-1"},
+            {"title": "Post 2", "link": "https://anthropic.com/post-2"},
+        ])
+        items = db.get_new_items()
+        marked = db.mark_items_notified([items[0]["id"]])
+        remaining = db.get_new_items()
+
+        assert marked == 1
+        assert len(remaining) == 1
+        assert remaining[0]["title"] == "Post 2"
 
     def test_items_across_multiple_sites(self, db):
         s1 = db.add_site("https://anthropic.com/research", "Anthropic")

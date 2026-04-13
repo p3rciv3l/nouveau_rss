@@ -32,6 +32,8 @@ class TestRefreshRssSites:
             results = await refresh_sites()
 
         assert results["Example"] == 1  # only the new post
+        assert db.list_sites()[0]["last_checked"] is not None
+        assert db.list_sites()[0]["last_error"] is None
 
     @pytest.mark.anyio
     async def test_rss_feed_error_doesnt_crash(self, db):
@@ -56,6 +58,9 @@ class TestRefreshRssSites:
 
         assert results["Broken"] == "error"
         assert results["Working"] == 1
+        sites = {site["name"]: site for site in db.list_sites()}
+        assert sites["Broken"]["last_error"] is not None
+        assert sites["Working"]["last_error"] is None
 
 
 class TestRefreshScrapedSites:
@@ -89,6 +94,7 @@ class TestRefreshScrapedSites:
             results = await refresh_sites()
 
         assert results["Broken"] == "error"
+        assert db.list_sites()[0]["last_error"] is not None
 
 
 class TestCheckNewWithRefresh:
@@ -103,6 +109,7 @@ class TestCheckNewWithRefresh:
         </channel></rss>
         """
         validation_items = [{
+            "id": 1,
             "source": "Example",
             "source_url": "https://example.com",
             "title": "Fresh Post",
@@ -120,9 +127,12 @@ class TestCheckNewWithRefresh:
              patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
             result = await check_new()
 
-        assert result.content[0].text == "1 new item. Use structuredContent.items."
+        assert result.content[0].text == (
+            "1 new item. Use structuredContent.items, then call acknowledge_items with their ids after delivery."
+        )
         assert result.structuredContent["items"][0]["title"] == "Fresh Post"
         assert result.structuredContent["items"][0]["link"] == "https://example.com/fresh"
+        assert result.structuredContent["items"][0]["id"] is not None
 
     @pytest.mark.anyio
     async def test_check_new_still_works_when_refresh_fails(self, db):
@@ -134,6 +144,7 @@ class TestCheckNewWithRefresh:
 
         import httpx
         validation_items = [{
+            "id": 1,
             "source": "Example",
             "source_url": "https://example.com",
             "title": "Stored Post",
@@ -152,5 +163,7 @@ class TestCheckNewWithRefresh:
              patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
             result = await check_new()
 
-        assert result.content[0].text == "1 new item. Use structuredContent.items."
+        assert result.content[0].text == (
+            "1 new item. Use structuredContent.items, then call acknowledge_items with their ids after delivery."
+        )
         assert result.structuredContent["items"][0]["title"] == "Stored Post"

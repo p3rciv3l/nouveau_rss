@@ -54,6 +54,8 @@ WHITESPACE_RE = re.compile(r"\s+")
 LINK_VALIDATION_CONCURRENCY = 5
 VALIDATION_TIMEOUT_SECONDS = 15
 VALIDATION_USER_AGENT = "nouveau-rss/0.2"
+REFRESH_CONCURRENCY = 5
+REFRESH_TIMEOUT_SECONDS = 20
 
 
 class LinkValidation(TypedDict):
@@ -66,6 +68,7 @@ class LinkValidation(TypedDict):
 
 
 class CheckNewItem(TypedDict):
+    id: int
     source: str
     source_url: str
     title: str
@@ -191,6 +194,7 @@ async def _validate_link(
     semaphore: asyncio.Semaphore,
 ) -> CheckNewItem:
     async with semaphore:
+        item_id = item["id"]
         source = _format_output_field(item["source"]) or "(unknown source)"
         title = _format_output_field(item["title"]) or "(untitled)"
         link = _format_output_field(item["link"])
@@ -217,6 +221,7 @@ async def _validate_link(
             validation["error"] = str(exc)
 
         return {
+            "id": item_id,
             "source": source,
             "source_url": source_url,
             "title": title,
@@ -314,32 +319,54 @@ async def list_sites() -> str:
 
 
 async def refresh_sites() -> dict[str, int | str]:
-    """Refresh all tracked sites. Returns {site_name: new_item_count or 'error'}."""
+    """Refresh all tracked sites. Returns {site_name: new_item_count or status}."""
     db = get_storage()
     sites = db.list_sites()
+    semaphore = asyncio.Semaphore(REFRESH_CONCURRENCY)
+
+    async def refresh_site(site: dict[str, Any]) -> tuple[str, int | str]:
+        async with semaphore:
+            try:
+                async def run_refresh() -> int:
+                    if site["feed_url"]:
+                        xml = await fetch_feed_xml(site["feed_url"])
+                        items = _parse_feed_items(site["feed_url"], xml)
+                    elif site.get("use_playwright"):
+                        html = await fetch_page_playwright(site["url"])
+                        if _looks_like_feed_document(html):
+                            items = _parse_feed_items(site["url"], html)
+                        else:
+                            items = _prepare_items(site["url"], scrape_links(site["url"], html))
+                    else:
+                        html = await fetch_page(site["url"])
+                        if _looks_like_feed_document(html):
+                            items = _parse_feed_items(site["url"], html)
+                        else:
+                            items = _prepare_items(site["url"], scrape_links(site["url"], html))
+                    return db.add_items(site["id"], items)
+
+                count = await asyncio.wait_for(run_refresh(), timeout=REFRESH_TIMEOUT_SECONDS)
+                db.update_site_check_status(site["id"], error=None)
+                return site["name"], count
+            except asyncio.TimeoutError:
+                db.update_site_check_status(site["id"], error=f"timeout_after_{REFRESH_TIMEOUT_SECONDS}s")
+                return site["name"], "timeout"
+            except Exception as exc:
+                db.update_site_check_status(site["id"], error=str(exc))
+                return site["name"], "error"
+
     results = {}
-    for site in sites:
-        try:
-            if site["feed_url"]:
-                xml = await fetch_feed_xml(site["feed_url"])
-                items = _parse_feed_items(site["feed_url"], xml)
-            elif site.get("use_playwright"):
-                html = await fetch_page_playwright(site["url"])
-                if _looks_like_feed_document(html):
-                    items = _parse_feed_items(site["url"], html)
-                else:
-                    items = _prepare_items(site["url"], scrape_links(site["url"], html))
-            else:
-                html = await fetch_page(site["url"])
-                if _looks_like_feed_document(html):
-                    items = _parse_feed_items(site["url"], html)
-                else:
-                    items = _prepare_items(site["url"], scrape_links(site["url"], html))
-            count = db.add_items(site["id"], items)
-            results[site["name"]] = count
-        except Exception:
-            results[site["name"]] = "error"
+    for name, result in await asyncio.gather(*(refresh_site(site) for site in sites)):
+        results[name] = result
     return results
+
+
+@mcp.tool()
+def acknowledge_items(item_ids: list[int]) -> str:
+    """Mark previously returned check_new items as delivered."""
+    db = get_storage()
+    count = db.mark_items_notified(item_ids)
+    return f"Acknowledged {count} item{'s' if count != 1 else ''}."
 
 
 @mcp.tool()
@@ -368,7 +395,12 @@ async def check_new() -> Annotated[CallToolResult, CheckNewPayload]:
         "items": validated_items,
     }
     return CallToolResult(
-        content=[TextContent(type="text", text=f"{summary} Use structuredContent.items.")],
+        content=[
+            TextContent(
+                type="text",
+                text=f"{summary} Use structuredContent.items, then call acknowledge_items with their ids after delivery.",
+            )
+        ],
         structuredContent=payload,
         isError=False,
     )

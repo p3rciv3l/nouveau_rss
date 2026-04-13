@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch, AsyncMock
-from src.rss_mcp.server import add_site, remove_site, list_sites, check_new
+from src.rss_mcp.server import add_site, remove_site, list_sites, check_new, acknowledge_items
 
 
 @pytest.fixture
@@ -136,6 +136,7 @@ class TestCheckNew:
             {"title": "New Post", "link": "https://example.com/new"},
         ])
         validation_items = [{
+            "id": 1,
             "source": "Example",
             "source_url": "https://example.com",
             "title": "New Post",
@@ -154,7 +155,10 @@ class TestCheckNew:
             result = await check_new()
         assert result.structuredContent["summary"] == "1 new item."
         assert result.structuredContent["items"][0]["validation"]["ok"] is True
-        assert result.content[0].text == "1 new item. Use structuredContent.items."
+        assert result.structuredContent["items"][0]["id"] is not None
+        assert result.content[0].text == (
+            "1 new item. Use structuredContent.items, then call acknowledge_items with their ids after delivery."
+        )
 
     @pytest.mark.anyio
     async def test_check_new_empty(self, db):
@@ -164,12 +168,14 @@ class TestCheckNew:
         assert "no new" in result.content[0].text.lower()
 
     @pytest.mark.anyio
-    async def test_check_new_marks_as_read(self, db):
+    async def test_check_new_requires_acknowledgement(self, db):
         site = db.add_site("https://example.com", "Example")
         db.add_items(site["id"], [
             {"title": "Post", "link": "https://example.com/post"},
         ])
+        item_id = db.get_new_items()[0]["id"]
         validation_items = [{
+            "id": item_id,
             "source": "Example",
             "source_url": "https://example.com",
             "title": "Post",
@@ -187,6 +193,13 @@ class TestCheckNew:
              patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
             await check_new()
             result = await check_new()
+        assert result.structuredContent["summary"] == "1 new item."
+
+        ack = acknowledge_items([item_id])
+        assert ack == "Acknowledged 1 item."
+
+        with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}):
+            result = await check_new()
         assert "no new" in result.content[0].text.lower()
 
     @pytest.mark.anyio
@@ -197,6 +210,7 @@ class TestCheckNew:
             {"title": "My Post", "link": "https://example.com/my-post"},
         ])
         validation_items = [{
+            "id": 1,
             "source": "Example",
             "source_url": "https://example.com",
             "title": "My Post",
@@ -213,7 +227,9 @@ class TestCheckNew:
         with patch("src.rss_mcp.server.refresh_sites", new_callable=AsyncMock, return_value={}), \
              patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
             result = await check_new()
-        assert result.content[0].text == "1 new item. Use structuredContent.items."
+        assert result.content[0].text == (
+            "1 new item. Use structuredContent.items, then call acknowledge_items with their ids after delivery."
+        )
 
     @pytest.mark.anyio
     async def test_check_new_untitled_items_show_placeholder(self, db):
@@ -222,6 +238,7 @@ class TestCheckNew:
             {"link": "https://example.com/no-title"},
         ])
         validation_items = [{
+            "id": 1,
             "source": "Example",
             "source_url": "https://example.com",
             "title": "(untitled)",
@@ -239,7 +256,9 @@ class TestCheckNew:
              patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
             result = await check_new()
         assert result.structuredContent["items"][0]["title"] == "(untitled)"
-        assert result.content[0].text == "1 new item. Use structuredContent.items."
+        assert result.content[0].text == (
+            "1 new item. Use structuredContent.items, then call acknowledge_items with their ids after delivery."
+        )
 
     @pytest.mark.anyio
     async def test_check_new_sanitizes_delimiters_in_titles(self, db):
@@ -248,6 +267,7 @@ class TestCheckNew:
             {"title": "A | B\nC", "link": "https://example.com/post"},
         ])
         validation_items = [{
+            "id": 1,
             "source": "Example",
             "source_url": "https://example.com",
             "title": "A / B C",
@@ -265,7 +285,9 @@ class TestCheckNew:
              patch("src.rss_mcp.server._validate_new_items", new_callable=AsyncMock, return_value=validation_items):
             result = await check_new()
         assert result.structuredContent["items"][0]["title"] == "A / B C"
-        assert result.content[0].text == "1 new item. Use structuredContent.items."
+        assert result.content[0].text == (
+            "1 new item. Use structuredContent.items, then call acknowledge_items with their ids after delivery."
+        )
 
     @pytest.mark.anyio
     async def test_check_new_exposes_structured_validation_metadata(self, db):
@@ -274,6 +296,7 @@ class TestCheckNew:
             {"title": "Needs Review", "link": "https://example.com/bad"},
         ])
         validation_items = [{
+            "id": 1,
             "source": "Example",
             "source_url": "https://example.com",
             "title": "Needs Review",
@@ -295,4 +318,6 @@ class TestCheckNew:
         item = result.structuredContent["items"][0]
         assert item["validation"]["ok"] is False
         assert item["validation"]["final_url"] == "https://example.com/moved"
-        assert result.content[0].text == "1 new item. Use structuredContent.items."
+        assert result.content[0].text == (
+            "1 new item. Use structuredContent.items, then call acknowledge_items with their ids after delivery."
+        )
